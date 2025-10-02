@@ -88,6 +88,10 @@ type (
 		// for syntax.
 		PVCStorageSize pulumi.StringInput
 
+		// StorageClassName allows selecting a specific StorageClass (for example "longhorn").
+		// If not set, the cluster default StorageClass will be used.
+		StorageClassName pulumi.StringPtrInput
+
 		// RomeoClaimName, if set, will turn on the coverage export of Chall-Manager for later download.
 		RomeoClaimName pulumi.StringInput
 
@@ -353,20 +357,21 @@ func (cm *ChallManager) provision(ctx *pulumi.Context, args *ChallManagerArgs, o
 			}
 			return 1 // default replicas to 1
 		}).(pulumi.IntOutput),
-		LogLevel:       args.LogLevel,
-		Etcd:           nil,
-		Swagger:        args.Swagger,
-		PVCAccessModes: args.pvcAccessModes,
-		PVCStorageSize: args.PVCStorageSize,
-		Otel:           nil,
-		RomeoClaimName: args.RomeoClaimName,
-		Kubeconfig:     args.Kubeconfig,
-		Requests:       args.Requests,
-		Limits:         args.Limits,
-		Envs:           args.Envs,
-		OCIInsecure:    args.OCIInsecure,
-		OCIUsername:    args.OCIUsername,
-		OCIPassword:    args.OCIPassword,
+		LogLevel:         args.LogLevel,
+		Etcd:             nil,
+		Swagger:          args.Swagger,
+		PVCAccessModes:   args.pvcAccessModes,
+		PVCStorageSize:   args.PVCStorageSize,
+		StorageClassName: args.StorageClassName,
+		Otel:             nil,
+		RomeoClaimName:   args.RomeoClaimName,
+		Kubeconfig:       args.Kubeconfig,
+		Requests:         args.Requests,
+		Limits:           args.Limits,
+		Envs:             args.Envs,
+		OCIInsecure:      args.OCIInsecure,
+		OCIUsername:      args.OCIUsername,
+		OCIPassword:      args.OCIPassword,
 	}
 	if args.EtcdReplicas != nil {
 		cmArgs.Etcd = &parts.ChallManagerEtcdArgs{

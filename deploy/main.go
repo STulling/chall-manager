@@ -22,6 +22,7 @@ func main() {
 
 	pulumi.Run(func(ctx *pulumi.Context) error {
 		cfg := loadConfig(ctx)
+		pulCfg := config.New(ctx, "")
 
 		// Deploy the Chall-Manager service.
 		args := &services.ChallManagerArgs{
@@ -34,6 +35,12 @@ func main() {
 				cfg.PVCAccessMode,
 			}),
 			PVCStorageSize: pulumi.String(cfg.PVCStorageSize),
+			StorageClassName: func() pulumi.StringPtrInput {
+				if sc := pulCfg.Get("storage-class-name"); sc != "" {
+					return pulumi.StringPtr(sc)
+				}
+				return nil
+			}(),
 			Expose:         cfg.Expose,
 			RomeoClaimName: pulumi.String(cfg.RomeoClaimName),
 			Kubeconfig:     cfg.Kubeconfig,

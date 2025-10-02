@@ -230,7 +230,7 @@ func (cmj *ChallManagerJanitor) provision(ctx *pulumi.Context, args *ChallManage
 		InitContainers: corev1.ContainerArray{
 			corev1.ContainerArgs{
 				Name:  pulumi.String("readiness"),
-				Image: pulumi.Sprintf("%slibrary/busybox:1.28", args.registry),
+				Image: pulumi.String("library/busybox:1.28"),
 				Command: pulumi.ToStringArray([]string{
 					"/bin/sh",
 					"-c",

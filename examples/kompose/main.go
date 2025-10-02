@@ -32,12 +32,12 @@ func main() {
 				},
 			},
 			// The following fits for a Nginx-based use case
-			IngressAnnotations: pulumi.StringMap{
-				"kubernetes.io/ingress.class":                  pulumi.String("nginx"),
-				"nginx.ingress.kubernetes.io/backend-protocol": pulumi.String("HTTP"),
-				"nginx.ingress.kubernetes.io/ssl-redirect":     pulumi.String("true"),
-				"nginx.ingress.kubernetes.io/proxy-body-size":  pulumi.String("50m"),
-			},
+			//IngressAnnotations: pulumi.StringMap{
+			//	"kubernetes.io/ingress.class":                  pulumi.String("nginx"),
+			//	"nginx.ingress.kubernetes.io/backend-protocol": pulumi.String("HTTP"),
+			//	"nginx.ingress.kubernetes.io/ssl-redirect":     pulumi.String("true"),
+			//	"nginx.ingress.kubernetes.io/proxy-body-size":  pulumi.String("50m"),
+			//},
 			IngressNamespace: pulumi.String("ingress-nginx"),
 			IngressLabels: pulumi.ToStringMap(map[string]string{
 				"app.kubernetes.io/component": "controller",

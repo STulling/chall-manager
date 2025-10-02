@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/ctfer-io/chall-manager/global"
 	"github.com/distribution/reference"
@@ -41,6 +42,7 @@ func NewORASClient(ref string, username, password string) (*auth.Client, error) 
 	cli := &auth.Client{
 		Client: &http.Client{
 			Transport: otelhttp.NewTransport(retry.NewTransport(nil)),
+			Timeout:   10 * time.Minute,
 		},
 		Cache: auth.NewCache(),
 	}

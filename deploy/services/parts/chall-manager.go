@@ -20,14 +20,15 @@ type (
 	ChallManager struct {
 		pulumi.ResourceState
 
-		tgtns   *Namespace
-		role    *rbacv1.Role
-		sa      *corev1.ServiceAccount
-		rb      *rbacv1.RoleBinding
-		kubesec *corev1.Secret
-		pvc     *corev1.PersistentVolumeClaim
-		dep     *appsv1.Deployment
-		svc     *corev1.Service
+		tgtns     *Namespace
+		role      *rbacv1.ClusterRole
+		sa        *corev1.ServiceAccount
+		rb        *rbacv1.ClusterRoleBinding
+		kubesec   *corev1.Secret
+		ociSecret *corev1.Secret
+		pvc       *corev1.PersistentVolumeClaim
+		dep       *appsv1.Deployment
+		svc       *corev1.Service
 
 		PodLabels pulumi.StringMapOutput
 		Endpoint  pulumi.StringOutput
@@ -60,6 +61,10 @@ type (
 		// PVCAccessModes defines the access modes supported by the PVC.
 		PVCAccessModes pulumi.StringArrayInput
 		pvcAccessModes pulumi.StringArrayOutput
+
+		// StorageClassName allows selecting a specific StorageClass (for example "longhorn").
+		// If not set, the cluster default StorageClass will be used.
+		StorageClassName pulumi.StringPtrInput
 
 		// PVCStorageSize enable to configure the storage size of the PVC Chall-Manager
 		// will write into (store Pulumi stacks, data persistency, ...).
@@ -280,10 +285,9 @@ func (cm *ChallManager) provision(ctx *pulumi.Context, args *ChallManagerArgs, o
 	}
 
 	if !args.mountKubeconfig {
-		// => Role, used to create a dedicated service acccount for Chall-Manager
-		cm.role, err = rbacv1.NewRole(ctx, "chall-manager-role", &rbacv1.RoleArgs{
+		// => ClusterRole, used to create a dedicated service account for Chall-Manager
+		cm.role, err = rbacv1.NewClusterRole(ctx, "chall-manager-role", &rbacv1.ClusterRoleArgs{
 			Metadata: metav1.ObjectMetaArgs{
-				Namespace: cm.tgtns.Name,
 				Labels: pulumi.StringMap{
 					"app.kubernetes.io/component": pulumi.String("chall-manager"),
 					"app.kubernetes.io/part-of":   pulumi.String("chall-manager"),
@@ -351,6 +355,15 @@ func (cm *ChallManager) provision(ctx *pulumi.Context, args *ChallManagerArgs, o
 						"watch",
 					}),
 				},
+				rbacv1.PolicyRuleArgs{
+					ApiGroups: pulumi.ToStringArray([]string{
+						"",
+					}),
+					Resources: pulumi.ToStringArray([]string{
+						"namespaces",
+					}),
+					Verbs: pulumi.ToStringArray(crudVerbs),
+				},
 			},
 		}, opts...)
 		if err != nil {
@@ -372,13 +385,10 @@ func (cm *ChallManager) provision(ctx *pulumi.Context, args *ChallManagerArgs, o
 			return
 		}
 
-		// => RoleBinding, binds the Role and ServiceAccount
-		cm.rb, err = rbacv1.NewRoleBinding(ctx, "chall-manager-role-binding", &rbacv1.RoleBindingArgs{
+		// => ClusterRoleBinding, binds the ClusterRole and ServiceAccount
+		cm.rb, err = rbacv1.NewClusterRoleBinding(ctx, "chall-manager-role-binding", &rbacv1.ClusterRoleBindingArgs{
 			Metadata: metav1.ObjectMetaArgs{
-				Namespace: cm.tgtns.Name,
-				Name: cm.tgtns.Name.ApplyT(func(ns string) string {
-					return fmt.Sprintf("ctfer-io:chall-manager:%s", ns) // uniquely identify the target-namespace RoleBinding
-				}).(pulumi.StringOutput),
+				Name: pulumi.String("ctfer-io:chall-manager"), // uniquely identify the ClusterRoleBinding
 				Labels: pulumi.StringMap{
 					"app.kubernetes.io/component": pulumi.String("chall-manager"),
 					"app.kubernetes.io/part-of":   pulumi.String("chall-manager"),
@@ -387,7 +397,7 @@ func (cm *ChallManager) provision(ctx *pulumi.Context, args *ChallManagerArgs, o
 			},
 			RoleRef: rbacv1.RoleRefArgs{
 				ApiGroup: pulumi.String("rbac.authorization.k8s.io"),
-				Kind:     pulumi.String("Role"),
+				Kind:     pulumi.String("ClusterRole"),
 				Name:     cm.role.Metadata.Name().Elem(),
 			},
 			Subjects: rbacv1.SubjectArray{
@@ -420,6 +430,33 @@ func (cm *ChallManager) provision(ctx *pulumi.Context, args *ChallManagerArgs, o
 			return
 		}
 	}
+
+	// => OCI Secret for image pull
+	/*
+		if args.OCIUsername != nil && args.OCIPassword != nil {
+			cm.ociSecret, err = corev1.NewSecret(ctx, "oci-secret", &corev1.SecretArgs{
+				Metadata: metav1.ObjectMetaArgs{
+					Namespace: args.Namespace,
+					Labels: pulumi.StringMap{
+						"app.kubernetes.io/component": pulumi.String("chall-manager"),
+						"app.kubernetes.io/part-of":   pulumi.String("chall-manager"),
+						"ctfer.io/stack-name":         pulumi.String(ctx.Stack()),
+					},
+				},
+				Type: pulumi.String("kubernetes.io/dockerconfigjson"),
+				StringData: pulumi.StringMap{
+					".dockerconfigjson": pulumi.All(args.registry, args.OCIUsername, args.OCIPassword).ApplyT(func(all []any) string {
+						reg := all[0].(string)
+						user := all[1].(string)
+						pass := all[2].(string)
+						return fmt.Sprintf(`{"auths":{"%s":{"username":"%s","password":"%s"}}}`, reg, user, pass)
+					}).(pulumi.StringOutput),
+				},
+			}, opts...)
+			if err != nil {
+				return
+			}
+		}*/
 
 	// => Deployment
 	initCts := corev1.ContainerArray{}
@@ -559,6 +596,12 @@ func (cm *ChallManager) provision(ctx *pulumi.Context, args *ChallManagerArgs, o
 		},
 		Spec: corev1.PersistentVolumeClaimSpecArgs{
 			AccessModes: args.PVCAccessModes,
+			StorageClassName: func() pulumi.StringPtrInput {
+				if args.StorageClassName != nil {
+					return args.StorageClassName
+				}
+				return nil
+			}(),
 			Resources: corev1.VolumeResourceRequirementsArgs{
 				Requests: pulumi.StringMap{
 					"storage": args.pvcStorageSize,
@@ -616,6 +659,16 @@ func (cm *ChallManager) provision(ctx *pulumi.Context, args *ChallManagerArgs, o
 							return cm.sa.Metadata.Name()
 						}
 						return nil
+					}(),
+					ImagePullSecrets: func() corev1.LocalObjectReferenceArray {
+						if cm.ociSecret != nil {
+							return corev1.LocalObjectReferenceArray{
+								corev1.LocalObjectReferenceArgs{
+									Name: cm.ociSecret.Metadata.Name(),
+								},
+							}
+						}
+						return corev1.LocalObjectReferenceArray{}
 					}(),
 					InitContainers: initCts,
 					Containers: corev1.ContainerArray{
@@ -719,7 +772,7 @@ func (cm *ChallManager) provision(ctx *pulumi.Context, args *ChallManagerArgs, o
 			},
 		},
 		Spec: corev1.ServiceSpecArgs{
-			ClusterIP: pulumi.String("None"), // Headless, for DNS purposes
+			Type: pulumi.String("ClusterIP"),
 			Ports: corev1.ServicePortArray{
 				corev1.ServicePortArgs{
 					Name: pulumi.String(portKey),
