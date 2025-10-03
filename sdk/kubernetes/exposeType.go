@@ -26,6 +26,10 @@ const (
 	// ExposeLoadBalancer defines a [PortBinding] that is exposed through
 	// a Kubernetes Service typed "LoadBalancer".
 	ExposeLoadBalancer ExposeType = "LoadBalancer"
+
+	// ExposeIngressTCP defines a [PortBinding] that is exposed through
+	// a Traefik IngressRouteTCP.
+	ExposeIngressTCP ExposeType = "IngressTCP"
 )
 
 type ExposeTypeInput interface {

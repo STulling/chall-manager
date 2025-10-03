@@ -50,6 +50,8 @@ type Kompose struct {
 	ingSpecs IngressSpecMapMapOutput
 	ntps     []*netwv1.NetworkPolicy
 
+	tcpUrls pulumi.StringMapMapOutput
+
 	URLs pulumi.StringMapMapOutput
 }
 
@@ -65,6 +67,7 @@ func NewKompose(ctx *pulumi.Context, name string, args *KomposeArgs, opts ...pul
 		svcSpecs: ServiceSpecMapMap{}.ToServiceSpecMapMapOutput(),
 		ings:     IngressMapMap{}.ToIngressMapMapOutput(),
 		ingSpecs: IngressSpecMapMap{}.ToIngressSpecMapMapOutput(),
+		tcpUrls:  pulumi.StringMapMap{}.ToStringMapMapOutput(),
 	}
 
 	if args == nil {
@@ -594,6 +597,8 @@ func (kmp *Kompose) provision(ctx *pulumi.Context, in KomposeArgsOutput, opts ..
 				return svcs
 			}).(ServiceSpecMapOutput)
 
+			tcpUrls := pulumi.StringMap{}.ToStringMapOutput()
+
 			switch p.ExposeType().Raw() {
 			case ExposeLoadBalancer:
 				// In the case of the LoadBalancer, the networking depends on the technology in use.
@@ -800,7 +805,151 @@ func (kmp *Kompose) provision(ctx *pulumi.Context, in KomposeArgsOutput, opts ..
 					return err
 				}
 				kmp.ntps = append(kmp.ntps, ntp)
+
+			case ExposeIngressTCP:
+				// Create IngressRouteTCP using ConfigGroup with YAML
+				irtYaml := pulumi.All(in.Identity(), in.Label(), name, in.Hostname(), p.Port(), p.Protocol(), svc.Metadata.Labels()).ApplyT(func(all []any) string {
+					id := all[0].(string)
+					lbl := all[1].(*string)
+					svcName := all[2].(string)
+					hostname := all[3].(string)
+					port := all[4].(int)
+					protocol := all[5].(string)
+					labels := all[6].(map[string]string)
+
+					if protocol == "" {
+						protocol = "TCP"
+					}
+
+					seed := fmt.Sprintf("%s-%s-%d/%s", id, svcName, port, protocol)
+					uniqueName := randName(seed)[:len(id)]
+					uniqueHost := fmt.Sprintf("%s.%s", uniqueName, hostname)
+
+					labelYaml := ""
+					for k, v := range labels {
+						labelYaml += fmt.Sprintf("    %s: %s\n", k, v)
+					}
+
+					irtName := fmt.Sprintf("emp-irt-%s-%s", id, svcName)
+					if lbl != nil {
+						irtName = fmt.Sprintf("emp-irt-%s-%s-%s", *lbl, id, svcName)
+					}
+
+					match := "HostSNI(`" + uniqueHost + "`)"
+
+					yaml := fmt.Sprintf(`apiVersion: traefik.io/v1alpha1
+kind: IngressRouteTCP
+metadata:
+  name: %s
+  namespace: %s
+  labels:
+%s
+spec:
+  entryPoints:
+  - ctf
+  routes:
+  - match: %s
+    services:
+    - name: %s
+      port: %d
+  tls:
+    certResolver: letsencrypt
+    domains:
+    - main: "*.%s"
+`, irtName, id, labelYaml, match, svcName, port, hostname)
+
+					return yaml
+				}).(pulumi.StringOutput)
+
+				irtCg, err := yamlv2.NewConfigGroup(ctx, "irt", &yamlv2.ConfigGroupArgs{
+					Yaml: irtYaml,
+				}, opts...)
+				if err != nil {
+					return err
+				}
+				_ = irtCg // Keep reference to avoid GC
+
+				tcpUrls = pulumi.All(tcpUrls, p, in.Identity(), name, in.Hostname(), p.Port(), p.Protocol()).ApplyT(func(all []any) map[string]string {
+					tcpUrls := all[0].(map[string]string)
+					pb := all[1].(PortBinding)
+					id := all[2].(string)
+					svcName := all[3].(string)
+					hostname := all[4].(string)
+					port := all[5].(int)
+					protocol := all[6].(string)
+
+					if protocol == "" {
+						protocol = "TCP"
+					}
+
+					seed := fmt.Sprintf("%s-%s-%d/%s", id, svcName, port, protocol)
+					uniqueName := randName(seed)[:len(id)]
+					uniqueHost := fmt.Sprintf("%s.%s", uniqueName, hostname)
+
+					tcpUrls[fmt.Sprintf("%d/%s", pb.Port, protocol)] = uniqueHost
+					return tcpUrls
+				}).(pulumi.StringMapOutput)
+				// Note: For TCP, we don't add to ings/ingSpecs as it's not an Ingress
+				// But we can treat it similarly for URLs if needed
+
+				// Create NetworkPolicy to allow traffic from Traefik
+				ntp, err := netwv1.NewNetworkPolicy(ctx, fmt.Sprintf("emp-ntp-%s-%d", rawName, i), &netwv1.NetworkPolicyArgs{
+					Metadata: metav1.ObjectMetaArgs{
+						Labels: svc.Metadata.Labels(),
+						Name: pulumi.All(in.Identity(), in.Label(), name, p.Port(), p.Protocol()).ApplyT(func(all []any) string {
+							id := all[0].(string)
+							name := all[2].(string)
+							port := all[3].(int)
+							prot := strings.ToLower(defaults(all[4], "TCP"))
+							if lbl, ok := all[1].(string); ok && lbl != "" {
+								return fmt.Sprintf("emp-ntp-%s-%s-%s-%d-%s", lbl, id, name, port, prot)
+							}
+							return fmt.Sprintf("emp-ntp-%s-%s-%d-%s", id, name, port, prot)
+						}).(pulumi.StringOutput),
+						Namespace: kmp.ns.Metadata.Name().Elem(),
+					},
+					Spec: netwv1.NetworkPolicySpecArgs{
+						PodSelector: metav1.LabelSelectorArgs{
+							MatchLabels: svc.Metadata.Labels(),
+						},
+						PolicyTypes: pulumi.ToStringArray([]string{
+							"Ingress",
+						}),
+						Ingress: netwv1.NetworkPolicyIngressRuleArray{
+							netwv1.NetworkPolicyIngressRuleArgs{
+								From: netwv1.NetworkPolicyPeerArray{
+									netwv1.NetworkPolicyPeerArgs{
+										NamespaceSelector: metav1.LabelSelectorArgs{
+											MatchLabels: pulumi.StringMap{
+												"kubernetes.io/metadata.name": in.IngressNamespace(),
+											},
+										},
+										PodSelector: metav1.LabelSelectorArgs{
+											MatchLabels: in.IngressLabels(),
+										},
+									},
+								},
+								Ports: netwv1.NetworkPolicyPortArray{
+									netwv1.NetworkPolicyPortArgs{
+										Port:     p.Port(),
+										Protocol: p.Protocol(),
+									},
+								},
+							},
+						},
+					},
+				}, opts...)
+				if err != nil {
+					return err
+				}
+				kmp.ntps = append(kmp.ntps, ntp)
 			}
+
+			kmp.tcpUrls = pulumi.All(kmp.tcpUrls, name, tcpUrls).ApplyT(func(all []any) map[string]map[string]string {
+				tcpUrls := all[0].(map[string]map[string]string)
+				tcpUrls[all[1].(string)] = all[2].(map[string]string)
+				return tcpUrls
+			}).(pulumi.StringMapMapOutput)
 
 			kmp.svcs = pulumi.All(kmp.svcs, name, svcs).ApplyT(func(all []any) map[string]map[string]*corev1.Service {
 				svcs := all[0].(map[string]map[string]*corev1.Service)
@@ -885,7 +1034,10 @@ func (kmp *Kompose) outputs(ctx *pulumi.Context, in KomposeArgsOutput) error {
 			return urls
 		}).(pulumi.StringMapOutput)
 
-		kmp.URLs = pulumi.All(kmp.URLs, name, merge(svcUrls, ingUrls)).ApplyT(func(all []any) map[string]map[string]string {
+		// => TCP IngressRoutes
+		tcpUrls := kmp.tcpUrls.MapIndex(name)
+
+		kmp.URLs = pulumi.All(kmp.URLs, name, merge(svcUrls, ingUrls, tcpUrls)).ApplyT(func(all []any) map[string]map[string]string {
 			urls := all[0].(map[string]map[string]string)
 			urls[all[1].(string)] = all[2].(map[string]string)
 			return urls

@@ -357,6 +357,24 @@ func (cm *ChallManager) provision(ctx *pulumi.Context, args *ChallManagerArgs, o
 				},
 				rbacv1.PolicyRuleArgs{
 					ApiGroups: pulumi.ToStringArray([]string{
+						"traefik.io",
+						"traefik.containo.us",
+					}),
+					Resources: pulumi.ToStringArray([]string{
+						"ingressroutes",
+						"ingressroutetcps",
+						"ingressrouteudps",
+						"middlewares",
+						"middlewaretcps",
+						"tlsoptions",
+						"tlsstores",
+						"traefikservices",
+						"serverstransports",
+					}),
+					Verbs: pulumi.ToStringArray(crudVerbs),
+				},
+				rbacv1.PolicyRuleArgs{
+					ApiGroups: pulumi.ToStringArray([]string{
 						"",
 					}),
 					Resources: pulumi.ToStringArray([]string{
