@@ -692,6 +692,9 @@ func (kmp *Kompose) provision(ctx *pulumi.Context, in KomposeArgsOutput, opts ..
 						ingName = fmt.Sprintf("emp-ing-%s-%s-%s", *lbl, id, svcName)
 					}
 
+					// Create a hostname-specific secret name for wildcard cert
+					secretName := fmt.Sprintf("wildcard-%s-tls", strings.ReplaceAll(hostname, ".", "-"))
+
 					yaml := fmt.Sprintf(`apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -705,8 +708,8 @@ spec:
   ingressClassName: traefik
   tls:
     - hosts:
-        - %s
-      secretName: wildcard-tls
+        - "*.%s"
+      secretName: %s
   rules:
     - host: %s
       http:
@@ -718,7 +721,7 @@ spec:
                 name: %s
                 port:
                   number: %d
-`, ingName, id, labelYaml, id, uniqueHost, uniqueHost, svcName, port)
+`, ingName, id, labelYaml, id, hostname, secretName, uniqueHost, svcName, port)
 
 					return yaml
 				}).(pulumi.StringOutput)
@@ -873,6 +876,9 @@ spec:
 
 					match := "HostSNI(`" + uniqueHost + "`)"
 
+					// Create a hostname-specific secret name for wildcard cert
+					secretName := fmt.Sprintf("wildcard-%s-tls", strings.ReplaceAll(hostname, ".", "-"))
+
 					yaml := fmt.Sprintf(`apiVersion: traefik.io/v1alpha1
 kind: IngressRouteTCP
 metadata:
@@ -889,8 +895,8 @@ spec:
     - name: %s
       port: %d
   tls:
-    secretName: wildcard-tls
-`, irtName, id, labelYaml, match, svcName, port)
+    secretName: %s
+`, irtName, id, labelYaml, match, svcName, port, secretName)
 
 					return yaml
 				}).(pulumi.StringOutput)
