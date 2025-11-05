@@ -704,6 +704,7 @@ metadata:
 %s  annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
     traefik.ingress.kubernetes.io/router.middlewares: %s-redirect-https@kubernetescrd
+	cert-manager.io/cluster-issuer: letsencrypt
 spec:
   ingressClassName: traefik
   tls:
