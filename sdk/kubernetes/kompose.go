@@ -664,8 +664,8 @@ func (kmp *Kompose) provision(ctx *pulumi.Context, in KomposeArgsOutput, opts ..
 				kmp.ntps = append(kmp.ntps, ntp)
 
 			case ExposeIngress:
-				// Create IngressRoute using ConfigGroup with YAML
-				irYaml := pulumi.All(in.Identity(), in.Label(), name, in.Hostname(), p.Port(), p.Protocol(), svc.Metadata.Labels()).ApplyT(func(all []any) string {
+				// Create standard Kubernetes Ingress using ConfigGroup with YAML
+				ingYaml := pulumi.All(in.Identity(), in.Label(), name, in.Hostname(), p.Port(), p.Protocol(), svc.Metadata.Labels()).ApplyT(func(all []any) string {
 					id := all[0].(string)
 					lbl := all[1].(*string)
 					svcName := all[2].(string)
@@ -687,43 +687,78 @@ func (kmp *Kompose) provision(ctx *pulumi.Context, in KomposeArgsOutput, opts ..
 						labelYaml += fmt.Sprintf("    %s: %s\n", k, v)
 					}
 
-					irName := fmt.Sprintf("emp-ir-%s-%s", id, svcName)
+					ingName := fmt.Sprintf("emp-ing-%s-%s", id, svcName)
 					if lbl != nil {
-						irName = fmt.Sprintf("emp-ir-%s-%s-%s", *lbl, id, svcName)
+						ingName = fmt.Sprintf("emp-ing-%s-%s-%s", *lbl, id, svcName)
 					}
 
-					yaml := fmt.Sprintf(`apiVersion: traefik.io/v1alpha1
-kind: IngressRoute
+					yaml := fmt.Sprintf(`apiVersion: networking.k8s.io/v1
+kind: Ingress
 metadata:
   name: %s
   namespace: %s
   labels:
-%s
+%s  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    traefik.ingress.kubernetes.io/router.middlewares: %s-redirect-https@kubernetescrd
 spec:
-  entryPoints:
-  - websecure
-  routes:
-  - match: Host(%s)
-    kind: Rule
-    services:
-    - name: %s
-      port: %d
+  ingressClassName: traefik
   tls:
-    certResolver: letsencrypt
-    domains:
-    - main: "*.%s"
-`, irName, id, labelYaml, "`"+uniqueHost+"`", svcName, port, hostname)
+    - hosts:
+        - %s
+      secretName: wildcard-tls
+  rules:
+    - host: %s
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: %s
+                port:
+                  number: %d
+`, ingName, id, labelYaml, id, uniqueHost, uniqueHost, svcName, port)
 
 					return yaml
 				}).(pulumi.StringOutput)
 
-				irCg, err := yamlv2.NewConfigGroup(ctx, fmt.Sprintf("ir-%s-%d", rawName, j), &yamlv2.ConfigGroupArgs{
-					Yaml: irYaml,
+				ingCg, err := yamlv2.NewConfigGroup(ctx, fmt.Sprintf("ing-%s-%d", rawName, j), &yamlv2.ConfigGroupArgs{
+					Yaml: ingYaml,
 				}, opts...)
 				if err != nil {
 					return err
 				}
-				_ = irCg // Keep reference to avoid GC
+				_ = ingCg // Keep reference to avoid GC
+
+				// Create Traefik Middleware for HTTPS redirect
+				mwYaml := pulumi.All(in.Identity(), in.Label()).ApplyT(func(all []any) string {
+					id := all[0].(string)
+					lbl := all[1].(*string)
+
+					_ = lbl // may use in future for custom naming
+
+					yaml := fmt.Sprintf(`apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: %s-redirect-https
+  namespace: %s
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+`, id, id)
+
+					return yaml
+				}).(pulumi.StringOutput)
+
+				mwCg, err := yamlv2.NewConfigGroup(ctx, fmt.Sprintf("mw-%s-%d", rawName, j), &yamlv2.ConfigGroupArgs{
+					Yaml: mwYaml,
+				}, opts...)
+				if err != nil {
+					return err
+				}
+				_ = mwCg // Keep reference to avoid GC
 
 				httpUrls := pulumi.All(p, in.Identity(), name, in.Hostname(), p.Port(), p.Protocol()).ApplyT(func(all []any) map[string]string {
 					pb := all[0].(PortBinding)
@@ -854,10 +889,8 @@ spec:
     - name: %s
       port: %d
   tls:
-    certResolver: letsencrypt
-    domains:
-    - main: "*.%s"
-`, irtName, id, labelYaml, match, svcName, port, hostname)
+    secretName: wildcard-tls
+`, irtName, id, labelYaml, match, svcName, port)
 
 					return yaml
 				}).(pulumi.StringOutput)
