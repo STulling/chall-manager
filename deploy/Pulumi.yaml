@@ -101,15 +101,13 @@ config:
   oci.username:
     type: string
     description: Define the OCI registry username to use.
-    default: ""
   oci.password:
     type: string
+    secret: true
     description: Define the OCI registry password to use.
-    default: ""
   oci.insecure:
     type: boolean
     description: If set to true, use HTTP rather than HTTPS to reach the OCI registry.
-    default: false
 
 author: CTFer.io
 license: Apache-2.0

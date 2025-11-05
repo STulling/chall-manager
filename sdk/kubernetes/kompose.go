@@ -664,96 +664,97 @@ func (kmp *Kompose) provision(ctx *pulumi.Context, in KomposeArgsOutput, opts ..
 				kmp.ntps = append(kmp.ntps, ntp)
 
 			case ExposeIngress:
-				ing, err := netwv1.NewIngress(ctx, fmt.Sprintf("kmp-ing-%s-%d", rawName, j), &netwv1.IngressArgs{
-					Metadata: metav1.ObjectMetaArgs{
-						Annotations: func() pulumi.StringMapOutput {
-							// If is exposed directly, plug it the annotations
-							if slices.Contains([]ExposeType{
-								ExposeNodePort,
-								ExposeLoadBalancer,
-							}, p.ExposeType().Raw()) {
-								return p.Annotations()
-							}
-							return pulumi.StringMap{}.ToStringMapOutput()
-						}(),
-						Labels: svc.Metadata.Labels(),
-						Name: pulumi.All(in.Identity(), in.Label(), name).ApplyT(func(all []any) string {
-							id := all[0].(string)
-							name := all[2].(string)
-							if lbl, ok := all[1].(string); ok && lbl != "" {
-								return fmt.Sprintf("emp-ing-%s-%s-%s", lbl, id, name)
-							}
-							return fmt.Sprintf("emp-ing-%s-%s", id, name)
-						}).(pulumi.StringOutput),
-						Namespace: kmp.ns.Metadata.Name().Elem(),
-					},
-					Spec: netwv1.IngressSpecArgs{
-						Rules: netwv1.IngressRuleArray{
-							netwv1.IngressRuleArgs{
-								Host: pulumi.Sprintf("%s.%s", pulumi.All(in.Identity(), name, p).ApplyT(func(all []any) string {
-									// Combine the identity, the container name and the port binding
-									// to generate a pseudo-random string.
-									id := all[0].(string)
-									name := all[1].(string)
-									p := all[2].(PortBinding)
-									if p.Protocol == "" {
-										p.Protocol = "TCP"
-									}
+				// Create IngressRoute using ConfigGroup with YAML
+				irYaml := pulumi.All(in.Identity(), in.Label(), name, in.Hostname(), p.Port(), p.Protocol(), svc.Metadata.Labels()).ApplyT(func(all []any) string {
+					id := all[0].(string)
+					lbl := all[1].(*string)
+					svcName := all[2].(string)
+					hostname := all[3].(string)
+					port := all[4].(int)
+					protocol := all[5].(string)
+					labels := all[6].(map[string]string)
 
-									// Generate a hash of the seed, keep only first bytes (same lenght as
-									// identity to avoid fingerprinting scenario on ingress name).
-									seed := fmt.Sprintf("%s-%s-%d/%s", id, name, p.Port, p.Protocol)
-									return randName(seed)[:len(id)]
-								}).(pulumi.StringOutput), in.Hostname()),
-								Http: netwv1.HTTPIngressRuleValueArgs{
-									Paths: netwv1.HTTPIngressPathArray{
-										netwv1.HTTPIngressPathArgs{
-											Path:     pulumi.String("/"),
-											PathType: pulumi.String("Prefix"),
-											Backend: netwv1.IngressBackendArgs{
-												Service: netwv1.IngressServiceBackendArgs{
-													Name: name,
-													Port: netwv1.ServiceBackendPortArgs{
-														Number: p.Port(),
-													},
-												},
-											},
-										},
-									},
-								},
-							},
-						},
-					},
+					if protocol == "" {
+						protocol = "TCP"
+					}
+
+					seed := fmt.Sprintf("%s-%s-%d/%s", id, svcName, port, protocol)
+					uniqueName := randName(seed)[:len(id)]
+					uniqueHost := fmt.Sprintf("%s.%s", uniqueName, hostname)
+
+					labelYaml := ""
+					for k, v := range labels {
+						labelYaml += fmt.Sprintf("    %s: %s\n", k, v)
+					}
+
+					irName := fmt.Sprintf("emp-ir-%s-%s", id, svcName)
+					if lbl != nil {
+						irName = fmt.Sprintf("emp-ir-%s-%s-%s", *lbl, id, svcName)
+					}
+
+					yaml := fmt.Sprintf(`apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: %s
+  namespace: %s
+  labels:
+%s
+spec:
+  entryPoints:
+  - websecure
+  routes:
+  - match: Host(%s)
+    kind: Rule
+    services:
+    - name: %s
+      port: %d
+  tls:
+    certResolver: letsencrypt
+    domains:
+    - main: "*.%s"
+`, irName, id, labelYaml, "`"+uniqueHost+"`", svcName, port, hostname)
+
+					return yaml
+				}).(pulumi.StringOutput)
+
+				irCg, err := yamlv2.NewConfigGroup(ctx, fmt.Sprintf("ir-%s-%d", rawName, j), &yamlv2.ConfigGroupArgs{
+					Yaml: irYaml,
 				}, opts...)
 				if err != nil {
 					return err
 				}
-				ings = pulumi.All(ings, p, ing).ApplyT(func(all []any) map[string]*netwv1.Ingress {
-					ings := all[0].(map[string]*netwv1.Ingress)
-					pb := all[1].(PortBinding)
-					ing := all[2].(*netwv1.Ingress)
+				_ = irCg // Keep reference to avoid GC
 
-					prot := pb.Protocol
-					if prot == "" {
-						prot = "TCP"
+				httpUrls := pulumi.All(p, in.Identity(), name, in.Hostname(), p.Port(), p.Protocol()).ApplyT(func(all []any) map[string]string {
+					pb := all[0].(PortBinding)
+					id := all[1].(string)
+					svcName := all[2].(string)
+					hostname := all[3].(string)
+					port := all[4].(int)
+					protocol := all[5].(string)
+
+					if protocol == "" {
+						protocol = "TCP"
 					}
 
-					ings[fmt.Sprintf("%d/%s", pb.Port, prot)] = ing
-					return ings
-				}).(netwv1.IngressMapOutput)
-				ingSpecs = pulumi.All(ingSpecs, p, ing.Spec).ApplyT(func(all []any) map[string]netwv1.IngressSpec {
-					ings := all[0].(map[string]netwv1.IngressSpec)
-					pb := all[1].(PortBinding)
-					ing := all[2].(netwv1.IngressSpec)
+					seed := fmt.Sprintf("%s-%s-%d/%s", id, svcName, port, protocol)
+					uniqueName := randName(seed)[:len(id)]
+					uniqueHost := fmt.Sprintf("%s.%s", uniqueName, hostname)
 
-					prot := pb.Protocol
-					if prot == "" {
-						prot = "TCP"
+					urls := map[string]string{}
+					urls[fmt.Sprintf("%d/%s", pb.Port, protocol)] = uniqueHost
+					return urls
+				}).(pulumi.StringMapOutput)
+
+				tcpUrls = pulumi.All(tcpUrls, httpUrls).ApplyT(func(all []any) map[string]string {
+					existing := all[0].(map[string]string)
+					newUrls := all[1].(map[string]string)
+					for k, v := range newUrls {
+						existing[k] = v
 					}
-
-					ings[fmt.Sprintf("%d/%s", pb.Port, prot)] = ing
-					return ings
-				}).(IngressSpecMapOutput)
+					return existing
+				}).(pulumi.StringMapOutput)
+				// Note: For HTTP IngressRoute, we don't add to ings/ingSpecs as it's not a traditional Ingress
 
 				ntp, err := netwv1.NewNetworkPolicy(ctx, fmt.Sprintf("emp-ntp-%s-%d", rawName, i), &netwv1.NetworkPolicyArgs{
 					Metadata: metav1.ObjectMetaArgs{
