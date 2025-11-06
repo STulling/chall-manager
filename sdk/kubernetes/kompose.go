@@ -701,7 +701,7 @@ metadata:
   labels:
 %s  annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
-    traefik.ingress.kubernetes.io/router.middlewares: %s-redirect-https@kubernetescrd
+    traefik.ingress.kubernetes.io/router.middlewares: %s-%s-redirect-https@kubernetescrd
     traefik.ingress.kubernetes.io/router.tls: "true"
 spec:
   ingressClassName: traefik
@@ -716,7 +716,7 @@ spec:
                 name: %s
                 port:
                   number: %d
-`, ingName, id, labelYaml, id, uniqueHost, svcName, port)
+`, ingName, id, labelYaml, id, id, uniqueHost, svcName, port)
 
 					return yaml
 				}).(pulumi.StringOutput)
