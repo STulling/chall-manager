@@ -489,6 +489,33 @@ func (kmp *Kompose) provision(ctx *pulumi.Context, in KomposeArgsOutput, opts ..
 			}
 			return nil
 		},
+		// Add node selector and tolerations to ensure challenge pods run on worker-autoscaling nodes
+		func(_ context.Context, args *pulumi.ResourceTransformArgs) *pulumi.ResourceTransformResult {
+			if args.Type == "kubernetes:apps/v1:Deployment" {
+				podSpec := args.Props["spec"].(pulumi.Map)["template"].(pulumi.Map)["spec"].(pulumi.Map)
+
+				// Add node selector to target challenge workload nodes
+				podSpec["nodeSelector"] = pulumi.StringMap{
+					"workload-type": pulumi.String("challenge"),
+				}
+
+				// Add toleration to allow scheduling on tainted worker-autoscaling nodes
+				podSpec["tolerations"] = pulumi.Array{
+					pulumi.Map{
+						"key":      pulumi.String("workload-type"),
+						"operator": pulumi.String("Equal"),
+						"value":    pulumi.String("challenge"),
+						"effect":   pulumi.String("NoSchedule"),
+					},
+				}
+
+				return &pulumi.ResourceTransformResult{
+					Props: args.Props,
+					Opts:  args.Opts,
+				}
+			}
+			return nil
+		},
 	}))
 
 	// Generate Kubernetes resources
