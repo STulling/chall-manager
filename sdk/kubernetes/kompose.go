@@ -692,9 +692,7 @@ func (kmp *Kompose) provision(ctx *pulumi.Context, in KomposeArgsOutput, opts ..
 						ingName = fmt.Sprintf("emp-ing-%s-%s-%s", *lbl, id, svcName)
 					}
 
-					// Create a hostname-specific secret name for wildcard cert
-					secretName := fmt.Sprintf("wildcard-%s-tls", strings.ReplaceAll(hostname, ".", "-"))
-
+					// Use Traefik's default certificate by enabling TLS via annotation
 					yaml := fmt.Sprintf(`apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -704,13 +702,9 @@ metadata:
 %s  annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
     traefik.ingress.kubernetes.io/router.middlewares: %s-redirect-https@kubernetescrd
-    cert-manager.io/cluster-issuer: letsencrypt
+    traefik.ingress.kubernetes.io/router.tls: "true"
 spec:
   ingressClassName: traefik
-  tls:
-    - hosts:
-        - "*.%s"
-      secretName: %s
   rules:
     - host: %s
       http:
@@ -722,7 +716,7 @@ spec:
                 name: %s
                 port:
                   number: %d
-`, ingName, id, labelYaml, id, hostname, secretName, uniqueHost, svcName, port)
+`, ingName, id, labelYaml, id, uniqueHost, svcName, port)
 
 					return yaml
 				}).(pulumi.StringOutput)
@@ -877,9 +871,7 @@ spec:
 
 					match := "HostSNI(`" + uniqueHost + "`)"
 
-					// Create a hostname-specific secret name for wildcard cert
-					secretName := fmt.Sprintf("wildcard-%s-tls", strings.ReplaceAll(hostname, ".", "-"))
-
+					// Enable TLS without specifying secretName so Traefik uses its default certificate
 					yaml := fmt.Sprintf(`apiVersion: traefik.io/v1alpha1
 kind: IngressRouteTCP
 metadata:
@@ -895,9 +887,8 @@ spec:
     services:
     - name: %s
       port: %d
-  tls:
-    secretName: %s
-`, irtName, id, labelYaml, match, svcName, port, secretName)
+  tls: {}
+`, irtName, id, labelYaml, match, svcName, port)
 
 					return yaml
 				}).(pulumi.StringOutput)
